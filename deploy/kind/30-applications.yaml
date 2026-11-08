@@ -1,0 +1,667 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: read-service
+  namespace: processing
+spec:
+  selector:
+    app: read-service
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: read-service
+  namespace: processing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: read-service
+  template:
+    metadata:
+      labels:
+        app: read-service
+    spec:
+      initContainers:
+        - name: wait-for-inventory-import
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - services.common.wait_for
+            - http://inventory-service.database.svc.cluster.local:8080/health/ready
+      containers:
+        - name: read-service
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.read_api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: INVENTORY_URL
+              value: http://inventory-service.database.svc.cluster.local:8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 192Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sales-processor
+  namespace: processing
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sales-processor
+  template:
+    metadata:
+      labels:
+        app: sales-processor
+    spec:
+      initContainers:
+        - name: wait-for-inventory-import
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - services.common.wait_for
+            - http://inventory-service.database.svc.cluster.local:8080/health/ready
+      containers:
+        - name: sales-processor
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.sales_processor.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: INVENTORY_URL
+              value: http://inventory-service.database.svc.cluster.local:8080
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka.streaming.svc.cluster.local:9092
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 400m
+              memory: 256Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sales-generator
+  namespace: shop-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: sales-generator}
+  template:
+    metadata:
+      labels: {app: sales-generator}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: sales-generator
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.sales_generator"]
+          env:
+            - name: SHOP_ID
+              value: shop-a
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: revenue-poller
+  namespace: shop-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: revenue-poller}
+  template:
+    metadata:
+      labels: {app: revenue-poller}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: revenue-poller
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.revenue_poller"]
+          env:
+            - name: SHOP_ID
+              value: shop-a
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warning-handler
+  namespace: shop-a
+spec:
+  selector: {app: warning-handler}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warning-handler
+  namespace: shop-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: warning-handler}
+  template:
+    metadata:
+      labels: {app: warning-handler}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: warning-handler
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.warning_handler:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-a
+            - name: REORDER_SERVICE_URL
+              value: http://reorder-service.shop-a.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reorder-service
+  namespace: shop-a
+spec:
+  selector: {app: reorder-service}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reorder-service
+  namespace: shop-a
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reorder-service}
+  template:
+    metadata:
+      labels: {app: reorder-service}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: reorder-service
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.reorder_service:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-a
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sales-generator
+  namespace: shop-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: sales-generator}
+  template:
+    metadata:
+      labels: {app: sales-generator}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: sales-generator
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.sales_generator"]
+          env:
+            - name: SHOP_ID
+              value: shop-b
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: revenue-poller
+  namespace: shop-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: revenue-poller}
+  template:
+    metadata:
+      labels: {app: revenue-poller}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: revenue-poller
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.revenue_poller"]
+          env:
+            - name: SHOP_ID
+              value: shop-b
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warning-handler
+  namespace: shop-b
+spec:
+  selector: {app: warning-handler}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warning-handler
+  namespace: shop-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: warning-handler}
+  template:
+    metadata:
+      labels: {app: warning-handler}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: warning-handler
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.warning_handler:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-b
+            - name: REORDER_SERVICE_URL
+              value: http://reorder-service.shop-b.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reorder-service
+  namespace: shop-b
+spec:
+  selector: {app: reorder-service}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reorder-service
+  namespace: shop-b
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reorder-service}
+  template:
+    metadata:
+      labels: {app: reorder-service}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: reorder-service
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.reorder_service:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-b
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sales-generator
+  namespace: shop-n
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: sales-generator}
+  template:
+    metadata:
+      labels: {app: sales-generator}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: sales-generator
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.sales_generator"]
+          env:
+            - name: SHOP_ID
+              value: shop-n
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: revenue-poller
+  namespace: shop-n
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: revenue-poller}
+  template:
+    metadata:
+      labels: {app: revenue-poller}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: revenue-poller
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.shop.revenue_poller"]
+          env:
+            - name: SHOP_ID
+              value: shop-n
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: warning-handler
+  namespace: shop-n
+spec:
+  selector: {app: warning-handler}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: warning-handler
+  namespace: shop-n
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: warning-handler}
+  template:
+    metadata:
+      labels: {app: warning-handler}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: warning-handler
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.warning_handler:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-n
+            - name: REORDER_SERVICE_URL
+              value: http://reorder-service.shop-n.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: reorder-service
+  namespace: shop-n
+spec:
+  selector: {app: reorder-service}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reorder-service
+  namespace: shop-n
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: reorder-service}
+  template:
+    metadata:
+      labels: {app: reorder-service}
+    spec:
+      initContainers:
+        - name: wait-for-gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["python", "-m", "services.common.wait_for", "http://gateway.streaming.svc.cluster.local:8080/health/ready"]
+      containers:
+        - name: reorder-service
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.shop.reorder_service:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports: [{containerPort: 8080}]
+          env:
+            - name: SHOP_ID
+              value: shop-n
+            - name: GATEWAY_URL
+              value: http://gateway.streaming.svc.cluster.local:8080
+          readinessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          livenessProbe:
+            httpGet: {path: /health/live, port: 8080}
+          resources:
+            requests: {cpu: 25m, memory: 64Mi}
+            limits: {cpu: 200m, memory: 192Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gateway
+  namespace: streaming
+spec:
+  type: NodePort
+  selector:
+    app: gateway
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      nodePort: 30080
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: streaming
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gateway
+  template:
+    metadata:
+      labels:
+        app: gateway
+    spec:
+      initContainers:
+        - name: wait-for-read-service
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -m
+            - services.common.wait_for
+            - http://read-service.processing.svc.cluster.local:8080/health/ready
+      containers:
+        - name: gateway
+          image: rt-data-backend:local
+          imagePullPolicy: IfNotPresent
+          command: ["uvicorn", "services.gateway.main:app", "--host", "0.0.0.0", "--port", "8080"]
+          ports:
+            - containerPort: 8080
+          env:
+            - name: ENVIRONMENT
+              value: kubernetes
+            - name: SHOP_IDS
+              value: shop-a,shop-b,shop-n
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: kafka.streaming.svc.cluster.local:9092
+            - name: READ_API_URL
+              value: http://read-service.processing.svc.cluster.local:8080
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: 8080
+          resources:
+            requests:
+              cpu: 50m
+              memory: 96Mi
+            limits:
+              cpu: 400m
+              memory: 256Mi
