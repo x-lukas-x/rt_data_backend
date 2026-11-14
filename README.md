@@ -8,6 +8,8 @@ A local test project running on a fixed Kind cluster with three shops, Kafka, an
 - Docker Desktop installed and running with its Linux engine.
 - PowerShell and `curl.exe` (included with current Windows 10/11 releases).
 
+For macOS, use the separate [macOS setup guide](README_MacOS.md), which includes a macOS deployment script.
+
 ## Install kubectl and Kind
 
 Open PowerShell in the repository directory. Administrator privileges are not required because the tools are installed under your user profile:
